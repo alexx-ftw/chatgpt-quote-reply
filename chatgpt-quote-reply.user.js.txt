@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT & Dots — Citar selección
 // @namespace    local.chatgpt.quote-reply
-// @version      1.0.1
-// @description  Añade citas al borrador al seleccionar texto. Sin envío automático, telemetría ni APIs privadas. Dots: pendiente de validar en vivo.
+// @version      1.0.2
+// @description  Cita texto seleccionado exclusivamente en Dots. Sin envío automático, telemetría ni APIs privadas. Pendiente de validar en vivo.
 // @homepageURL  https://github.com/alexx-ftw/chatgpt-quote-reply
 // @supportURL   https://github.com/alexx-ftw/chatgpt-quote-reply/issues
 // @updateURL    https://raw.githubusercontent.com/alexx-ftw/chatgpt-quote-reply/main/chatgpt-quote-reply.meta.js
 // @downloadURL  https://raw.githubusercontent.com/alexx-ftw/chatgpt-quote-reply/main/chatgpt-quote-reply.user.js
-// @match        https://chatgpt.com/*
+// @match        https://chatgpt.com/dots
+// @match        https://chatgpt.com/dots/*
 // @run-at       document-idle
 // @grant        none
 // @noframes
@@ -17,7 +18,7 @@
 (() => {
   'use strict';
 
-  // The userscript manager limits execution to chatgpt.com. Tests run only
+  // The userscript manager limits execution to chatgpt.com/dots. Tests run only
   // against local, synthetic fixtures, never against an authenticated site.
   const ROOT_ID = 'chatgpt-quote-reply';
   const MAX_SELECTION = 50000;
@@ -30,11 +31,11 @@
     + '[data-testid^="conversation-turn-"],[data-message-content],.markdown';
   const MAIN = 'main,[role="main"],[role="log"]';
 
-  if (!document.body || document.getElementById(ROOT_ID) || window.top !== window) return;
+  if (!isChatRoute() || !document.body || document.getElementById(ROOT_ID) || window.top !== window) return;
 
   const host = document.createElement('div');
   host.id = ROOT_ID;
-  host.setAttribute('data-userscript-version', '1.0.1');
+  host.setAttribute('data-userscript-version', '1.0.2');
   host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
   const shadow = host.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
@@ -112,13 +113,29 @@
   let selectionTimer = 0;
   let statusTimer = 0;
   let lastEditor = null;
+  let knownUrl = location.href;
 
   function asElement(node) {
     return node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
   }
 
   function isChatRoute() {
-    return location.pathname === '/' || /^\/(?:c|g|dots)(?:\/|$)/.test(location.pathname);
+    return /^\/dots(?:\/|$)/.test(location.pathname);
+  }
+
+  function syncRoute() {
+    if (knownUrl !== location.href) {
+      knownUrl = location.href;
+      hideBar();
+      panel.hidden = true;
+      status.hidden = true;
+      clearTimeout(selectionTimer);
+      clearTimeout(statusTimer);
+      lastEditor = null;
+    }
+    const allowed = isChatRoute();
+    host.hidden = !allowed;
+    return allowed;
   }
 
   function isVisible(node) {
@@ -169,6 +186,7 @@
   }
 
   function notify(message) {
+    if (!isChatRoute()) return;
     clearTimeout(statusTimer);
     status.textContent = message;
     status.hidden = false;
@@ -176,6 +194,7 @@
   }
 
   function refreshSelection() {
+    if (!syncRoute()) return;
     if (busy || pointerDown || !panel.hidden || shadow.activeElement) return;
     const snapshot = selectionSnapshot();
     if (!snapshot) { hideBar(); return; }
@@ -193,6 +212,7 @@
 
   function scheduleSelection() {
     clearTimeout(selectionTimer);
+    if (!syncRoute()) return;
     selectionTimer = setTimeout(refreshSelection, 90);
   }
 
@@ -238,6 +258,7 @@
   }
 
   function showCopyPanel(quote, reason) {
+    if (!isChatRoute()) return;
     hideBar();
     explanation.textContent = reason + ' Copia esta cita y pégala en tu mensaje. No se ha enviado nada.';
     copyArea.value = quote + '\n\n';
@@ -247,13 +268,14 @@
   }
 
   async function copyText(text) {
+    if (!isChatRoute()) return false;
     if (!navigator.clipboard?.writeText) return false;
     try { await navigator.clipboard.writeText(text); return true; }
     catch { return false; }
   }
 
   function snapshotStillValid(snapshot) {
-    return snapshot && snapshot.url === location.href
+    return isChatRoute() && snapshot && snapshot.url === location.href
       && snapshot.range.startContainer.isConnected && snapshot.range.endContainer.isConnected
       && snapshot.range.toString() === snapshot.rangeText;
   }
@@ -388,12 +410,14 @@
     else showCopyPanel(quote, 'El navegador no permitió copiar automáticamente.');
   });
   panelCopy.addEventListener('click', async () => {
+    if (!syncRoute()) return;
     if (await copyText(copyArea.value)) notify('Cita copiada.');
     else { copyArea.focus(); copyArea.select(); notify('Usa Ctrl+C o Cmd+C para copiar la cita seleccionada.'); }
   });
   panelClose.addEventListener('click', () => { panel.hidden = true; hideBar(); });
 
   document.addEventListener('focusin', event => {
+    if (!syncRoute()) return;
     const target = event.target;
     if (target instanceof HTMLElement && target.matches(EDITABLE)
       && candidateEditors().includes(target) && editorScore(target) >= 20) lastEditor = target;
@@ -408,6 +432,7 @@
   document.addEventListener('selectionchange', scheduleSelection);
   document.addEventListener('keyup', scheduleSelection);
   document.addEventListener('keydown', event => {
+    if (!syncRoute()) return;
     if (event.key === 'Escape') { panel.hidden = true; hideBar(); status.hidden = true; return; }
     if (event.altKey && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.repeat
       && (event.code === 'KeyQ' || event.key.toLowerCase() === 'q')) {
@@ -415,10 +440,14 @@
       if (snapshot) { event.preventDefault(); void quoteSelection(snapshot); }
     }
   });
-  window.addEventListener('popstate', hideBar);
-  window.addEventListener('hashchange', hideBar);
+  // A client-side navigation need not reload the document. Drop pending UI
+  // when the visible app changes route, without patching its history methods.
+  const routeObserver = new MutationObserver(syncRoute);
+  routeObserver.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('popstate', syncRoute);
+  window.addEventListener('hashchange', syncRoute);
   window.addEventListener('resize', hideBar);
   window.addEventListener('blur', () => { pointerDown = false; hideBar(); });
   document.addEventListener('scroll', () => { if (!busy) hideBar(); }, true);
 })();
-// END CHATGPT-QUOTE-REPLY 1.0.1
+// END CHATGPT-QUOTE-REPLY 1.0.2

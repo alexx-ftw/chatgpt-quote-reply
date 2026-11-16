@@ -1,6 +1,8 @@
 # ChatGPT & Dots — Citar selección
 
-Userscript 1.0.1 para añadir fragmentos seleccionados al borrador en chatgpt.com.
+Userscript 1.0.2 para añadir fragmentos seleccionados al borrador **exclusivamente
+en Dots**, en `chatgpt.com/dots` y `chatgpt.com/dots/...`.
+No se activa en chats normales, proyectos, GPTs ni en la página principal.
 
 [Instalar / actualizar el userscript](https://raw.githubusercontent.com/alexx-ftw/chatgpt-quote-reply/main/chatgpt-quote-reply.user.js)
 
@@ -15,7 +17,8 @@ No se debe interpretar el soporte diseñado para dots como compatibilidad compro
 2. Confirma **Instalar** o **Actualizar** en tu gestor. Se mantienen el nombre y
    el espacio de nombres de la versión 1.0.0 para que pueda reconocerla.
 3. Comprueba que quede una única copia activada y tenga acceso a chatgpt.com.
-4. Recarga la pestaña de ChatGPT o de tu dot.
+4. Recarga la pestaña de tu dot. Si entras desde un chat normal sin que la página
+   se recargue, recarga una vez dentro de Dots para que el gestor inyecte el script.
 
 Si el navegador solo muestra texto, importa el archivo descargado desde el gestor,
 o sustituye **todo** el contenido del script antiguo por el archivo completo.
@@ -66,8 +69,10 @@ Otros scripts o extensiones instalados pueden tener comportamientos propios.
 
 ## Diseño y límites
 
-- Se ejecuta únicamente en `https://chatgpt.com/*`, dentro de rutas de chat,
-  proyectos/GPTs y dots; no se limita a las rutas `/c/`.
+- Los únicos patrones de instalación son `https://chatgpt.com/dots` y
+  `https://chatgpt.com/dots/*`. También comprueba la ruta al ejecutarse y al citar.
+- Si sales de Dots por navegación interna sin recargar, se oculta la interfaz
+  del script, se descarta la selección pendiente y se desactivan sus acciones.
 - Intenta reconocer tanto el editor habitual como un editor editable único
   situado en la zona principal, incluso sin `<form>` ni `#prompt-textarea`.
 - No elige un campo arbitrario cuando hay varios candidatos ambiguos.
@@ -94,7 +99,7 @@ Otros scripts o extensiones instalados pueden tener comportamientos propios.
 
 ## Si no aparece o no inserta
 
-1. Recarga después de instalar y confirma que estás en chatgpt.com.
+1. Recarga después de instalar y confirma que estás en la sección Dots de chatgpt.com.
 2. Selecciona una frase de un mensaje, no el texto del propio borrador o de la barra lateral.
 3. Prueba el atajo Alt + Mayús + Q.
 4. Si hay varios editores, haz clic en el cuadro donde quieres escribir y vuelve
@@ -111,8 +116,8 @@ Puede deberse a una copia incompleta o modificada, o a cómo la inyecta el gesto
 el mensaje por sí solo no identifica cuál de esas causas es la responsable.
 
 Reinstala desde el enlace directo para utilizar el archivo completo y comprobado.
-En 1.0.1 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.1`. Una vez ejecutado,
-el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.1"`.
+En 1.0.2 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.2`. Una vez ejecutado,
+el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.2"`.
 Si persiste el error, exporta solo este userscript desde el gestor para comparar
 la copia instalada con la publicada; no hace falta exportar otros scripts ni ajustes.
 
@@ -154,6 +159,12 @@ Este script es una implementación independiente. No está afiliado a OpenAI.
 - Eliminado el aviso de éxito al añadir una cita; se conservan avisos de error y copia.
 - Versión identificable en el elemento raíz y marcador final para comprobar la copia.
 - Pruebas de distribución y de inserción silenciosa.
+
+## Cambios en 1.0.2
+
+- Restricción exclusiva a Dots tanto en `@match` como en las comprobaciones internas.
+- Desactivación de acciones y limpieza de la interfaz al salir de Dots por navegación interna.
+- Conserva las actualizaciones automáticas y la inserción silenciosa.
 
 ## Desinstalación
 

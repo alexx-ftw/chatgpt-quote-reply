@@ -70,6 +70,14 @@ test('distribution: .meta.js exactly matches the userscript header and contains 
   assert.doesNotThrow(() => new vm.Script(metadata, { filename: 'chatgpt-quote-reply.meta.js' }));
 });
 
+test('distribution: userscript matching is restricted to Dots and has no broader include rule', () => {
+  const header = userscriptHeader(source);
+  const matches = [...header.matchAll(/^\/\/[ \t]+@match[ \t]+(.+)$/gm)]
+    .map(match => match[1].trim()).sort();
+  assert.deepEqual(matches, ['https://chatgpt.com/dots', 'https://chatgpt.com/dots/*']);
+  assert.doesNotMatch(header, /^\/\/[ \t]+@include[ \t]/m);
+});
+
 test('blockquote: preserves multiple lines, empty quoted lines, and code indentation', () => {
   const blockquote = loadHelper('blockquote');
   assert.equal(blockquote('uno\n\n    dos\n\ttres'), '> uno\n>\n>     dos\n> \ttres');
@@ -86,22 +94,74 @@ test('blockquote: Unicode, symbols, and markup-like payloads remain literal text
   assert.equal(blockquote(input), '> <img src=x onerror=alert(1)>\n> <script>inert()</script>\n> España 🛩️ > 10');
 });
 
-test('routes: accepts chat, project chat, dots, and home but not unrelated settings pages', () => {
-  const location = { pathname: '/' };
+test('routes: accepts only the Dots root and Dots descendants, never home or regular/project chats', () => {
+  const location = { pathname: '/dots', search: '', hash: '' };
   const isChatRoute = loadHelper('isChatRoute', { location });
-  for (const pathname of ['/', '/c/example', '/g/project/c/example', '/dots/example']) {
+  for (const pathname of ['/dots', '/dots/', '/dots/example', '/dots/example/nested']) {
     location.pathname = pathname;
     assert.equal(isChatRoute(), true, pathname);
   }
-  for (const pathname of ['/settings', '/library', '/plugins', '/dotting', '/cats']) {
+  for (const pathname of ['/', '/c/example', '/g/project/c/example', '/settings', '/library', '/plugins', '/dot', '/dotting', '/dots-other', '/dotsSuffix']) {
     location.pathname = pathname;
     assert.equal(isChatRoute(), false, pathname);
   }
+  location.pathname = '/dots/example';
+  location.search = '?view=chat';
+  location.hash = '#message';
+  assert.equal(isChatRoute(), true, 'Query strings and fragments do not change a Dots pathname.');
+  location.pathname = '/c/example';
+  location.search = '?redirect=/dots/example';
+  assert.equal(isChatRoute(), false, 'A Dots string inside a query must not enable a regular chat.');
+});
+
+test('SPA route sync: hides and clears stale UI when leaving Dots, then safely enables it on return', () => {
+  const location = { href: 'http://127.0.0.1/dots/a', pathname: '/dots/a' };
+  const cleared = [];
+  const state = {
+    location,
+    knownUrl: location.href,
+    isChatRoute: loadHelper('isChatRoute', { location }),
+    host: { hidden: false },
+    bar: { hidden: false },
+    panel: { hidden: false },
+    status: { hidden: false },
+    pending: { text: 'stale quote' },
+    lastEditor: {},
+    selectionTimer: 11,
+    statusTimer: 22,
+    clearTimeout: timer => cleared.push(timer),
+  };
+  state.hideBar = loadHelper('hideBar', state);
+  const syncRoute = loadHelper('syncRoute', state);
+  location.pathname = '/c/ordinary-chat';
+  location.href = 'http://127.0.0.1/c/ordinary-chat';
+  assert.equal(syncRoute(), false);
+  assert.equal(state.host.hidden, true);
+  assert.equal(state.bar.hidden, true);
+  assert.equal(state.panel.hidden, true);
+  assert.equal(state.status.hidden, true);
+  assert.equal(state.pending, null);
+  assert.equal(state.lastEditor, null);
+  assert.equal(state.knownUrl, location.href);
+  assert.deepEqual(cleared, [11, 22]);
+
+  location.pathname = '/dots/b';
+  location.href = 'http://127.0.0.1/dots/b';
+  assert.equal(syncRoute(), true);
+  assert.equal(state.host.hidden, false);
+  assert.equal(state.bar.hidden, true, 'Returning must not restore the old selection toolbar.');
+  assert.equal(state.panel.hidden, true);
+  assert.equal(state.status.hidden, true);
+  assert.equal(state.pending, null);
+  assert.equal(state.lastEditor, null);
+  assert.equal(state.knownUrl, location.href);
+  assert.deepEqual(cleared, [11, 22, 11, 22]);
 });
 
 test('snapshot: rejects changed route, changed selected text, and detached source nodes', () => {
-  const location = { href: 'http://127.0.0.1/dots/a' };
-  const snapshotStillValid = loadHelper('snapshotStillValid', { location });
+  const location = { href: 'http://127.0.0.1/dots/a', pathname: '/dots/a' };
+  const isChatRoute = loadHelper('isChatRoute', { location });
+  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute });
   const startContainer = { isConnected: true };
   const endContainer = { isConnected: true };
   let rangeValue = 'texto';
@@ -122,6 +182,24 @@ test('snapshot: rejects changed route, changed selected text, and detached sourc
   endContainer.isConnected = false;
   assert.equal(snapshotStillValid(snapshot), false);
   assert.equal(Boolean(snapshotStillValid(null)), false);
+});
+
+test('snapshot: a matching URL and intact selection are insufficient outside Dots', () => {
+  const location = { href: '', pathname: '' };
+  const isChatRoute = loadHelper('isChatRoute', { location });
+  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute });
+  for (const pathname of ['/', '/c/example', '/g/project/c/example', '/dots-other']) {
+    location.pathname = pathname;
+    location.href = `http://127.0.0.1${pathname}`;
+    const snapshot = {
+      url: location.href, rangeText: 'selección intacta',
+      range: {
+        startContainer: { isConnected: true }, endContainer: { isConnected: true },
+        toString: () => 'selección intacta',
+      },
+    };
+    assert.equal(Boolean(snapshotStillValid(snapshot)), false, pathname);
+  }
 });
 
 function findWith(candidates, lastEditor = null) {
@@ -452,8 +530,19 @@ test('insertion logic: a rich editor that becomes noneditable on focus is not mo
 
 function quoteActionHarness(options = {}) {
   const editor = {};
-  const location = { href: 'http://127.0.0.1/dots/fixture' };
-  const snapshot = { text: 'Fragmento seleccionado', url: location.href };
+  const location = {
+    pathname: options.pathname ?? '/dots/fixture',
+    href: `http://127.0.0.1${options.pathname ?? '/dots/fixture'}`,
+  };
+  const isChatRoute = loadHelper('isChatRoute', { location });
+  const validateSnapshot = loadHelper('snapshotStillValid', { location, isChatRoute });
+  const snapshot = {
+    text: 'Fragmento seleccionado', rangeText: 'Fragmento seleccionado', url: location.href,
+    range: {
+      startContainer: { isConnected: true }, endContainer: { isConnected: true },
+      toString: () => 'Fragmento seleccionado',
+    },
+  };
   const calls = { notifications: [], copyPanels: [], insertions: [], hidden: 0 };
   const state = {
     busy: false,
@@ -461,7 +550,8 @@ function quoteActionHarness(options = {}) {
     MAX_SELECTION: 50000,
     quoteButton: { disabled: false },
     location,
-    snapshotStillValid: () => options.valid !== false,
+    isChatRoute,
+    snapshotStillValid: current => options.valid !== false && validateSnapshot(current),
     blockquote: loadHelper('blockquote'),
     findEditor: () => options.missingEditor ? null : editor,
     hideBar: () => { calls.hidden++; },
@@ -469,7 +559,10 @@ function quoteActionHarness(options = {}) {
     showCopyPanel: (quote, reason) => calls.copyPanels.push({ quote, reason }),
     appendQuote: async (target, quote) => {
       calls.insertions.push({ target, quote });
-      if (options.changedRoute) location.href = 'http://127.0.0.1/dots/different';
+      if (options.changedRoute) {
+        location.href = 'http://127.0.0.1/dots/different';
+        location.pathname = '/dots/different';
+      }
       if (options.throwError) throw new Error('Simulated unsupported editor');
       return options.result ?? { ok: true, changed: true };
     },
@@ -489,6 +582,15 @@ test('quote action: successful insertion is silent and does not call notify or o
   assert.equal(state.lastEditor, editor);
   assert.equal(state.busy, false);
   assert.equal(state.quoteButton.disabled, false);
+});
+
+test('quote action: never inserts in home, ordinary chats, projects, or lookalike paths', async () => {
+  for (const pathname of ['/', '/c/example', '/g/project/c/example', '/dots-other']) {
+    const { quoteSelection, snapshot, calls } = quoteActionHarness({ pathname });
+    await quoteSelection(snapshot);
+    assert.equal(calls.insertions.length, 0, pathname);
+    assert.equal(calls.copyPanels.length, 0, pathname);
+  }
 });
 
 test('quote action: invalid selection still produces an actionable error without inserting', async () => {
