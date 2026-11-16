@@ -506,3 +506,140 @@ test('replacing a reply at the same URL cannot insert a stale selection into the
   assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
   assert.equal(await page.locator('#secondary-editor').inputValue(), 'Borrador de otro hilo.');
 });
+
+async function transformedReplyFixture(t, {
+  tag = 'div', modal = false, panelStyle, messageStyle,
+  viewport = { width: 1280, height: 900 },
+}) {
+  const role = tag === 'div' ? ' role="dialog"' : '';
+  const outside = `<${tag} id="geometry-panel"${role} aria-label="Hilo de prueba"
+    style="position:fixed;right:auto;bottom:auto;margin:0;padding:0;box-sizing:border-box;
+      border:2px solid #555;max-width:none;max-height:none;background:white;overflow:hidden;
+      transform-origin:center;${panelStyle}">
+    <form style="position:absolute;top:16px;left:16px;right:16px;margin:0">
+      <textarea id="secondary-editor" aria-label="Reply"
+        style="box-sizing:border-box;width:100%;min-height:72px;margin:0;padding:8px;resize:none">${replyDraft}</textarea>
+      <button type="submit" data-fixture-send>Send reply</button>
+    </form>
+    <article data-message-author-role="assistant" data-message-id="geometry-message"
+      style="position:absolute;margin:0;padding:0;border:0;max-width:calc(100% - 24px);${messageStyle}">
+      <p id="geometry-selection" style="display:inline-block;margin:0">Una cita en el panel.</p>
+    </article>
+  </${tag}>`;
+  const page = await fixture(t, primaryForm, '', viewport, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  if (modal) await page.locator('#geometry-panel').evaluate(dialog => dialog.showModal());
+  await select(page, '#geometry-selection');
+  return page;
+}
+
+async function assertPositionedReplyQuote(page, { clipped = false, nearEdges = false } = {}) {
+  // Assert the entire toolbar, not only the primary button: the Copy button
+  // must not overflow a clipped or transformed panel either.
+  const toolbar = await page.getByRole('group', {
+    name: 'Citar texto seleccionado', exact: true,
+  }).boundingBox();
+  const panel = await page.locator('#geometry-panel').boundingBox();
+  const viewport = page.viewportSize();
+  const selection = await page.evaluate(() => {
+    const range = window.getSelection().getRangeAt(0);
+    const rects = Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0);
+    const rect = rects.at(-1) || range.getBoundingClientRect();
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+  assert.ok(toolbar && panel && viewport, 'The selection, panel and full toolbar must have rendered geometry.');
+  assert.ok(toolbar.width > 0 && toolbar.height > 0);
+  assert.ok(panel.x > viewport.width / 2, 'The fixture must exercise a substantial rightward offset.');
+  if (clipped) {
+    assert.ok(panel.x + panel.width > viewport.width, 'Fixture must extend beyond the right viewport edge.');
+    assert.ok(panel.y + panel.height > viewport.height, 'Fixture must extend below the viewport.');
+  }
+  const bounds = {
+    left: Math.max(0, panel.x), top: Math.max(0, panel.y),
+    right: Math.min(viewport.width, panel.x + panel.width),
+    bottom: Math.min(viewport.height, panel.y + panel.height),
+  };
+  // A small visible margin is intentional; allow subpixel rounding introduced
+  // by transforms without accepting a flush or partially off-screen toolbar.
+  const margin = 4;
+  const rounding = 0.75;
+  assert.ok(bounds.right - bounds.left >= toolbar.width + margin * 2,
+    'The fixture must leave enough visible width for a valid clamped placement.');
+  assert.ok(bounds.bottom - bounds.top >= toolbar.height + margin * 2,
+    'The fixture must leave enough visible height for a valid clamped placement.');
+  assert.ok(toolbar.x >= bounds.left + margin - rounding, 'Toolbar must stay inside the visible left panel edge.');
+  assert.ok(toolbar.y >= bounds.top + margin - rounding, 'Toolbar must stay inside the visible top panel edge.');
+  assert.ok(toolbar.x + toolbar.width <= bounds.right - margin + rounding,
+    'The full toolbar must stay inside the intersection of panel and viewport on the right.');
+  assert.ok(toolbar.y + toolbar.height <= bounds.bottom - margin + rounding,
+    'The full toolbar must stay inside the intersection of panel and viewport at the bottom.');
+  if (nearEdges) {
+    assert.ok(bounds.right - selection.x - selection.width >= -rounding &&
+      bounds.right - selection.x - selection.width <= 24,
+    'The selected text must be close to the visible right boundary for this edge case.');
+    assert.ok(bounds.bottom - selection.y - selection.height >= -rounding &&
+      bounds.bottom - selection.y - selection.height <= 24,
+    'The selected text must be close to the visible bottom boundary for this edge case.');
+  }
+  const horizontalGap = Math.max(0, selection.x - toolbar.x - toolbar.width,
+    toolbar.x - selection.x - selection.width);
+  const verticalGap = Math.max(0, selection.y - toolbar.y - toolbar.height,
+    toolbar.y - selection.y - selection.height);
+  assert.ok(horizontalGap <= 24 && verticalGap <= 24,
+    `Toolbar must remain near its selection when it fits; gaps were ${horizontalGap}px and ${verticalGap}px.`);
+  await quoteButton(page).click();
+  const text = await settledText(page, '#secondary-editor', /Una cita en el panel/);
+  assert.ok(text.startsWith(replyDraft));
+  assert.match(text, /> Una cita en el panel\./);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+}
+
+test('translated right-hand dialog places the full toolbar close to its selection in local coordinates', async t => {
+  const page = await transformedReplyFixture(t, {
+    panelStyle: 'left:78%;top:52%;width:440px;height:500px;transform:translate(-50%, -50%);',
+    messageStyle: 'left:50%;top:55%;transform:translate(-50%, -50%);',
+  });
+  await assertPositionedReplyQuote(page);
+});
+
+test('native modal with translate and scale(.8) keeps its toolbar inside the transformed panel', async t => {
+  const page = await transformedReplyFixture(t, {
+    tag: 'dialog', modal: true,
+    panelStyle: 'left:80%;top:60%;width:420px;height:480px;transform:translate(-50%, -50%) scale(.8);',
+    messageStyle: 'left:50%;top:55%;transform:translate(-50%, -50%);',
+  });
+  assert.equal(await quoteButton(page).evaluate(button => {
+    const dialog = document.querySelector('#geometry-panel');
+    for (let node = button; node; node = node.parentNode || node.host) {
+      if (node === dialog) return true;
+    }
+    return false;
+  }), true, 'Transform correction must preserve mounting inside the modal top layer.');
+  await assertPositionedReplyQuote(page);
+});
+
+test('scaled reply panel clamps a selection near its lower-right corner without changing the primary draft', async t => {
+  const page = await transformedReplyFixture(t, {
+    tag: 'aside',
+    panelStyle: 'left:calc(100% - 190px);top:calc(100% - 185px);width:400px;height:400px;transform:translate(-50%, -50%) scale(.8);',
+    messageStyle: 'right:10px;bottom:8px;',
+  });
+  await assertPositionedReplyQuote(page, { nearEdges: true });
+});
+
+test('partially off-screen transformed dialog clamps to panel/viewport intersection rather than panel bounds alone', async t => {
+  const page = await transformedReplyFixture(t, {
+    panelStyle: 'left:calc(100% - 70px);top:calc(100% - 70px);width:440px;height:380px;transform:translate(-50%, -50%) scale(.8);',
+    messageStyle: 'right:150px;bottom:120px;',
+  });
+  await assertPositionedReplyQuote(page, { clipped: true, nearEdges: true });
+});
+
+test('narrow scaled reply keeps both toolbar buttons inside the panel on a mobile-width viewport', async t => {
+  const page = await transformedReplyFixture(t, {
+    viewport: { width: 390, height: 844 },
+    panelStyle: 'left:calc(100% - 103px);top:60%;width:224px;height:380px;transform:translate(-50%, -50%) scale(.8);',
+    messageStyle: 'right:8px;bottom:8px;',
+  });
+  await assertPositionedReplyQuote(page, { nearEdges: true });
+});

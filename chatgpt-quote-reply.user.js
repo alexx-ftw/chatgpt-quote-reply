@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT & Dots — Citar selección
 // @namespace    local.chatgpt.quote-reply
-// @version      1.0.3
+// @version      1.0.4
 // @description  Cita texto seleccionado exclusivamente en Dots. Sin envío automático, telemetría ni APIs privadas. Pendiente de validar en vivo.
 // @homepageURL  https://github.com/alexx-ftw/chatgpt-quote-reply
 // @supportURL   https://github.com/alexx-ftw/chatgpt-quote-reply/issues
@@ -41,8 +41,9 @@
 
   const host = document.createElement('div');
   host.id = ROOT_ID;
-  host.setAttribute('data-userscript-version', '1.0.3');
-  host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;';
+  host.setAttribute('data-userscript-version', '1.0.4');
+  host.style.cssText = 'display:block;position:fixed;inset:0;margin:0;padding:0;border:0;'
+    + 'overflow:visible;z-index:2147483646;pointer-events:none;';
   const shadow = host.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
   style.textContent = `
@@ -52,7 +53,9 @@
       background: #fff; border: 1px solid #c9ccd1; border-radius: 12px;
       box-shadow: 0 5px 24px #0003; pointer-events: auto; }
     [hidden] { display: none !important; }
-    .bar { position: fixed; display: flex; align-items: center; gap: 4px; padding: 5px; }
+    .bar { position: absolute; display: flex; flex-wrap: wrap; align-items: center;
+      width: max-content; justify-content: center; gap: 4px; padding: 5px; }
+    .bar button { min-width: 0; overflow-wrap: anywhere; }
     button { font: inherit; font-weight: 600; color: inherit; background: transparent;
       border: 0; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
     button:hover { background: #edf0f3; }
@@ -274,16 +277,91 @@
     const snapshot = selectionSnapshot();
     if (!snapshot) { hideBar(); return; }
     mountOverlay(snapshot);
+    if (!positionBar(snapshot)) { hideBar(); return; }
     pending = snapshot;
+  }
+
+  function intersectRects(rects) {
+    if (!rects.length) return null;
+    const left = Math.max(...rects.map(rect => rect.left));
+    const top = Math.max(...rects.map(rect => rect.top));
+    const right = Math.min(...rects.map(rect => rect.right));
+    const bottom = Math.min(...rects.map(rect => rect.bottom));
+    if (![left, top, right, bottom].every(Number.isFinite) || right <= left || bottom <= top) return null;
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  function floatingPosition(anchor, size, area, margin = 8, gap = 10) {
+    if (!area || ![anchor.left, anchor.top, anchor.bottom, size.width, size.height,
+      area.left, area.top, area.right, area.bottom, margin, gap].every(Number.isFinite)
+      || size.width <= 0 || size.height <= 0 || margin < 0 || gap < 0) return null;
+    const left = area.left + margin;
+    const top = area.top + margin;
+    const right = area.right - margin - size.width;
+    const bottom = area.bottom - margin - size.height;
+    if (right < left || bottom < top) return null;
+    const below = anchor.bottom + gap;
+    const above = anchor.top - gap - size.height;
+    const y = below <= bottom ? Math.max(top, below)
+      : above >= top ? Math.min(bottom, above) : Math.max(top, Math.min(below, bottom));
+    return { x: Math.max(left, Math.min(anchor.left, right)), y };
+  }
+
+  function overlayScale(rect, size) {
+    if (![rect.width, rect.height, size.width, size.height].every(value => Number.isFinite(value) && value > 0)) return null;
+    const x = rect.width / size.width;
+    const y = rect.height / size.height;
+    return [x, y].every(value => Number.isFinite(value) && value > 0) ? { x, y } : null;
+  }
+
+  function toOverlayCoordinates(point, rect, scale) {
+    if (!point || !scale || ![point.x, point.y, rect.left, rect.top, scale.x, scale.y].every(Number.isFinite)
+      || scale.x <= 0 || scale.y <= 0) return null;
+    return { left: (point.x - rect.left) / scale.x, top: (point.y - rect.top) / scale.y };
+  }
+
+  function floatingBounds(snapshot) {
+    const viewport = window.visualViewport;
+    const left = viewport?.offsetLeft ?? 0;
+    const top = viewport?.offsetTop ?? 0;
+    const rects = [{ left, top,
+      right: left + (viewport?.width ?? window.innerWidth),
+      bottom: top + (viewport?.height ?? window.innerHeight) }];
+    // Keep the controls inside the selected reply AND the visible viewport.
+    // A display:contents wrapper has no box; use its nearest boxed ancestor.
+    for (const start of new Set([snapshot.scope, snapshot.boundary, host.parentElement])) {
+      for (let node = start; node && node !== document.body; node = node.parentElement) {
+        const rect = node.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) { rects.push(rect); break; }
+      }
+    }
+    return intersectRects(rects);
+  }
+
+  function positionBar(snapshot) {
+    const area = floatingBounds(snapshot);
+    const hostRect = host.getBoundingClientRect();
+    const scale = overlayScale(hostRect, { width: host.offsetWidth, height: host.offsetHeight });
+    if (!area || !scale || area.width <= 17 || area.height <= 16) return false;
+    const visibleLines = Array.from(snapshot.range.getClientRects())
+      .map(rect => intersectRects([rect, area])).filter(Boolean);
+    const anchor = visibleLines.at(-1);
+    if (!anchor) return false;
+    // Measure after mounting and width limiting. A transformed dialog changes
+    // the origin/scale; viewport coordinates cannot be assigned as local left/top.
+    bar.style.visibility = 'hidden';
+    bar.style.left = '0px';
+    bar.style.top = '0px';
+    // One visual pixel of slack avoids rejecting a fit after subpixel rounding.
+    bar.style.maxWidth = `${(area.width - 17) / scale.x}px`;
     bar.hidden = false;
-    const rect = snapshot.rect;
-    const bounds = bar.getBoundingClientRect();
-    const x = Math.max(8, Math.min(rect.left, window.innerWidth - bounds.width - 8));
-    const below = rect.bottom + 10;
-    const y = below + bounds.height < window.innerHeight - 8
-      ? below : Math.max(8, Math.min(rect.top - bounds.height - 10, window.innerHeight - bounds.height - 8));
-    bar.style.left = `${x}px`;
-    bar.style.top = `${y}px`;
+    const point = floatingPosition(anchor, bar.getBoundingClientRect(), area);
+    const local = toOverlayCoordinates(point, hostRect, scale);
+    if (!local) { bar.hidden = true; bar.style.visibility = ''; return false; }
+    bar.style.left = `${local.left}px`;
+    bar.style.top = `${local.top}px`;
+    bar.style.visibility = '';
+    return true;
   }
 
   function scheduleSelection() {
@@ -563,4 +641,4 @@
   window.addEventListener('blur', () => { pointerDown = false; hideBar(); });
   document.addEventListener('scroll', () => { if (!busy) hideBar(); }, true);
 })();
-// END CHATGPT-QUOTE-REPLY 1.0.3
+// END CHATGPT-QUOTE-REPLY 1.0.4

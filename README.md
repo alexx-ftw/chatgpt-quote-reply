@@ -1,6 +1,6 @@
 # ChatGPT & Dots — Citar selección
 
-Userscript 1.0.3 para añadir fragmentos seleccionados al borrador **exclusivamente
+Userscript 1.0.4 para añadir fragmentos seleccionados al borrador **exclusivamente
 en Dots**, en `chatgpt.com/dots` y `chatgpt.com/dots/...`.
 No se activa en chats normales, proyectos, GPTs ni en la página principal.
 
@@ -85,7 +85,10 @@ Otros scripts o extensiones instalados pueden tener comportamientos propios.
 - Captura también el destino al seleccionar. Si se cierra o reemplaza el reply,
   pide seleccionar otra vez en vez de redirigir una cita pendiente.
 - En diálogos, aloja sus controles dentro de ese diálogo para no quedar detrás
-  de un modal nativo. El posicionamiento en el sitio real está pendiente de prueba.
+  de un modal nativo. Convierte las coordenadas del texto a las del contenedor,
+  compensando desplazamientos y escalas alineadas, y limita la barra al área
+  visible del reply. En paneles estrechos permite distribuir los botones en
+  varias filas. El posicionamiento en el sitio real está pendiente de prueba.
 - Inserta al final del editor enriquecido mediante la operación nativa de
   edición; no reconstruye ni sustituye su HTML para añadir una cita.
 - Para un textarea conserva el contenido anterior completo. La alternativa
@@ -129,8 +132,8 @@ Puede deberse a una copia incompleta o modificada, o a cómo la inyecta el gesto
 el mensaje por sí solo no identifica cuál de esas causas es la responsable.
 
 Reinstala desde el enlace directo para utilizar el archivo completo y comprobado.
-En 1.0.3 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.3`. Una vez ejecutado,
-el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.3"`.
+En 1.0.4 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.4`. Una vez ejecutado,
+el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.4"`.
 Si persiste el error, exporta solo este userscript desde el gestor para comparar
 la copia instalada con la publicada; no hace falta exportar otros scripts ni ajustes.
 
@@ -141,13 +144,15 @@ bloqueando esa carga. No desactives CSP ni protecciones del navegador para insta
 
 Las pruebas comprueban la sintaxis del archivo distribuido, la coherencia de sus
 metadatos de actualización y el éxito silencioso, además de la lógica de citas.
-Los 26 escenarios de interfaz están preparados pero no ejecutados satisfactoriamente,
+Los 31 escenarios de interfaz están preparados pero no ejecutados satisfactoriamente,
 porque el navegador no pudo arrancar en este entorno.
 
 - Sintaxis: `node --check chatgpt-quote-reply.user.js`.
 - Lógica sin navegador: `node --test tests/*.unit.cjs`.
 - Las pruebas de contexto usan un árbol DOM simulado: comprueban la separación
   de destinos y los cambios de hilo sin conectarse a ChatGPT ni abrir navegador.
+- Las pruebas de posición comprueban coordenadas, márgenes, desplazamientos y
+  escalas con geometría simulada; no sustituyen una comprobación visual real.
 - Interfaz (pendiente): `node --test tests/quote-reply.spec.cjs`, con Playwright
   y Chromium disponibles en el equipo donde se ejecute.
 
@@ -191,6 +196,19 @@ Este script es una implementación independiente. No está afiliado a OpenAI.
 - Controles dentro del diálogo cuando el origen está en un modal.
 - Pruebas de aislamiento de contextos y nuevos escenarios de interfaz sintéticos.
 - Conserva el alcance exclusivo a Dots, los borradores existentes y el éxito silencioso.
+
+## Cambios en 1.0.4
+
+- Corregida la mezcla de coordenadas de la ventana y del panel al situar el
+  flotante dentro de diálogos desplazados o escalados.
+- La barra usa posición absoluta respecto a su propio contenedor, conserva
+  un margen dentro de la intersección del reply y el viewport y cambia a la
+  parte superior si no hay sitio debajo de la selección.
+- Ajuste de ancho y distribución de botones para replies estrechos, con
+  medición del alto después de ajustar el ancho.
+- Selección de una línea visible como ancla; no se muestra la barra si no
+  existe espacio suficiente. El atajo de teclado sigue disponible.
+- Sin cambios en la inserción, el aislamiento de hilos ni el alcance solo Dots.
 
 ## Desinstalación
 
