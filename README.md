@@ -1,6 +1,6 @@
 # ChatGPT & Dots — Citar selección
 
-Userscript 1.0.2 para añadir fragmentos seleccionados al borrador **exclusivamente
+Userscript 1.0.3 para añadir fragmentos seleccionados al borrador **exclusivamente
 en Dots**, en `chatgpt.com/dots` y `chatgpt.com/dots/...`.
 No se activa en chats normales, proyectos, GPTs ni en la página principal.
 
@@ -48,6 +48,9 @@ sincroniza la copia `.txt` y ejecuta las pruebas antes de publicarla.
 
 - Selecciona texto de un mensaje y pulsa **Citar** en el nuevo menú flotante.
 - La cita se añade al final del borrador, con espacio para escribir tu respuesta.
+- Si seleccionas dentro de un reply, busca el editor de ese hilo, no el del chat
+  principal. Reconoce paneles laterales, diálogos y contenedores de hilo con
+  mensajes y compositor propios; el DOM real sigue pendiente de validación.
 - Una inserción correcta es silenciosa: no aparece el aviso «Cita añadida al borrador».
 - Puedes seleccionar otro fragmento y volver a pulsar **Citar** para acumular citas.
 - Atajo alternativo: **Alt + Mayús + Q** mientras el texto siga seleccionado.
@@ -76,6 +79,13 @@ Otros scripts o extensiones instalados pueden tener comportamientos propios.
 - Intenta reconocer tanto el editor habitual como un editor editable único
   situado en la zona principal, incluso sin `<form>` ni `#prompt-textarea`.
 - No elige un campo arbitrario cuando hay varios candidatos ambiguos.
+- Determina el panel/hilo de origen antes de puntuar sus editores. El foco anterior
+  de otro hilo no cambia el destino. Si no hay un editor utilizable en el contexto
+  identificado, ofrece copia manual; no salta al principal.
+- Captura también el destino al seleccionar. Si se cierra o reemplaza el reply,
+  pide seleccionar otra vez en vez de redirigir una cita pendiente.
+- En diálogos, aloja sus controles dentro de ese diálogo para no quedar detrás
+  de un modal nativo. El posicionamiento en el sitio real está pendiente de prueba.
 - Inserta al final del editor enriquecido mediante la operación nativa de
   edición; no reconstruye ni sustituye su HTML para añadir una cita.
 - Para un textarea conserva el contenido anterior completo. La alternativa
@@ -100,14 +110,17 @@ Otros scripts o extensiones instalados pueden tener comportamientos propios.
 ## Si no aparece o no inserta
 
 1. Recarga después de instalar y confirma que estás en la sección Dots de chatgpt.com.
-2. Selecciona una frase de un mensaje, no el texto del propio borrador o de la barra lateral.
+2. Selecciona una frase de un mensaje del chat o del reply, no el propio borrador
+   ni los controles de navegación.
 3. Prueba el atajo Alt + Mayús + Q.
 4. Si hay varios editores, haz clic en el cuadro donde quieres escribir y vuelve
    a seleccionar el fragmento del mensaje.
 5. Usa **Copiar** o el panel manual si el editor sigue sin reconocerse.
 
-Si necesitas reportar un fallo, basta indicar el navegador, si es chat normal o dot,
-y qué sucede al seleccionar/pulsar Citar. No hacen falta cookies ni credenciales.
+Si necesitas reportar un fallo, indica el navegador, si sucede en el chat del dot
+o dentro de un reply, y qué ocurre al seleccionar/pulsar Citar. Si el reply usa
+un contenedor no reconocible, puede hacer falta su HTML y el del editor, con
+mensajes personales eliminados. No hacen falta cookies ni credenciales.
 
 ### Error «Unexpected end of input» al abrir ChatGPT
 
@@ -116,8 +129,8 @@ Puede deberse a una copia incompleta o modificada, o a cómo la inyecta el gesto
 el mensaje por sí solo no identifica cuál de esas causas es la responsable.
 
 Reinstala desde el enlace directo para utilizar el archivo completo y comprobado.
-En 1.0.2 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.2`. Una vez ejecutado,
-el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.2"`.
+En 1.0.3 su última línea es `// END CHATGPT-QUOTE-REPLY 1.0.3`. Una vez ejecutado,
+el elemento `#chatgpt-quote-reply` lleva `data-userscript-version="1.0.3"`.
 Si persiste el error, exporta solo este userscript desde el gestor para comparar
 la copia instalada con la publicada; no hace falta exportar otros scripts ni ajustes.
 
@@ -128,11 +141,13 @@ bloqueando esa carga. No desactives CSP ni protecciones del navegador para insta
 
 Las pruebas comprueban la sintaxis del archivo distribuido, la coherencia de sus
 metadatos de actualización y el éxito silencioso, además de la lógica de citas.
-Los 16 escenarios de interfaz están preparados pero no ejecutados satisfactoriamente,
+Los 26 escenarios de interfaz están preparados pero no ejecutados satisfactoriamente,
 porque el navegador no pudo arrancar en este entorno.
 
 - Sintaxis: `node --check chatgpt-quote-reply.user.js`.
-- Lógica sin navegador: `node --test tests/quote-reply.unit.cjs`.
+- Lógica sin navegador: `node --test tests/*.unit.cjs`.
+- Las pruebas de contexto usan un árbol DOM simulado: comprueban la separación
+  de destinos y los cambios de hilo sin conectarse a ChatGPT ni abrir navegador.
 - Interfaz (pendiente): `node --test tests/quote-reply.spec.cjs`, con Playwright
   y Chromium disponibles en el equipo donde se ejecute.
 
@@ -165,6 +180,17 @@ Este script es una implementación independiente. No está afiliado a OpenAI.
 - Restricción exclusiva a Dots tanto en `@match` como en las comprobaciones internas.
 - Desactivación de acciones y limpieza de la interfaz al salir de Dots por navegación interna.
 - Conserva las actualizaciones automáticas y la inserción silenciosa.
+
+## Cambios en 1.0.3
+
+- Eliminado el bloqueo general de mensajes y editores en paneles de replies.
+- Selección del editor limitada al hilo de origen antes de aplicar prioridades.
+- Reconoce etiquetas Reply/Responder y compositores inline con contexto propio.
+- Protecciones frente a editores ocultos/deshabilitados, cierre o sustitución de
+  un reply y selecciones que cruzan distintos hilos.
+- Controles dentro del diálogo cuando el origen está en un modal.
+- Pruebas de aislamiento de contextos y nuevos escenarios de interfaz sintéticos.
+- Conserva el alcance exclusivo a Dots, los borradores existentes y el éxito silencioso.
 
 ## Desinstalación
 

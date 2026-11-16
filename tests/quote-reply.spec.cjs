@@ -39,12 +39,14 @@ before(async () => {
 
 after(async () => { await browser?.close(); });
 
-function pageHTML(editor, extra = '') {
+function pageHTML(editor, extra = '', outsideMain = '') {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
   <title>Offline quote helper fixture</title><style>
   body { margin: 24px; font: 16px/1.5 sans-serif; color: #17212c; background: #fafafa; }
   main { max-width: 720px; margin: 20px auto; }
   article { padding: 16px; border: 1px solid #ccc; background: white; }
+  aside, [role="dialog"], dialog { max-width: 720px; margin: 20px auto; padding: 16px; }
+  dialog { width: min(700px, 80vw); }
   textarea, [contenteditable="true"], [contenteditable=""] { display: block; min-height: 85px; width: 90%;
     padding: 12px; margin-top: 24px; border: 1px solid #777; background: white; }
   [hidden] { display: none !important; }
@@ -59,18 +61,22 @@ function pageHTML(editor, extra = '') {
     </article>
     ${editor}
     ${extra}
-  </main></body></html>`;
+  </main>${outsideMain}</body></html>`;
 }
 
 const plainEditor = '<textarea id="prompt-textarea" aria-label="Mensaje"></textarea>';
 const richEditor = '<div id="prompt-textarea" role="textbox" aria-label="Mensaje" contenteditable="true"></div>';
+const primaryForm = `<form>${plainEditor}<button id="send" type="submit">Enviar</button></form>`;
+const replyMessage = '<article data-message-author-role="assistant" data-message-id="secondary-message"><p id="reply-passage">Fragmento de la respuesta en hilo.</p></article>';
+const primaryDraft = 'Borrador principal intacto.';
+const replyDraft = 'Borrador del hilo.';
 
-async function fixture(t, editor = plainEditor, extra = '', viewport = { width: 1120, height: 900 }) {
+async function fixture(t, editor = plainEditor, extra = '', viewport = { width: 1120, height: 900 }, outsideMain = '') {
   const context = await browser.newContext({ viewport, serviceWorkers: 'block' });
   const page = await context.newPage();
   const requests = [];
   const errors = [];
-  const html = pageHTML(editor, extra);
+  const html = pageHTML(editor, extra, outsideMain);
   await page.route('**/*', async route => {
     if (route.request().url() === fixtureURL && route.request().isNavigationRequest()) {
       await route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: html });
@@ -93,11 +99,16 @@ async function fixture(t, editor = plainEditor, extra = '', viewport = { width: 
         window.__quoteFixture.inputValue = event.target.value ?? event.target.innerText;
       }
     });
-    document.querySelector('#send')?.addEventListener('click', () => window.__quoteFixture.sends++);
+    document.addEventListener('click', event => {
+      if (event.composedPath().some(node => node instanceof Element &&
+          node.matches('#send, [data-fixture-send]'))) window.__quoteFixture.sends++;
+    }, true);
   });
   await page.addScriptTag({ content: source });
   t.after(async () => {
-    const counters = await page.evaluate(() => window.__quoteFixture);
+    const counters = await page.evaluate(() => ({
+      submissions: window.__quoteFixture.submissions, sends: window.__quoteFixture.sends,
+    }));
     await context.close();
     assert.equal(counters.submissions, 0, 'The helper must never submit a form.');
     assert.equal(counters.sends, 0, 'The helper must never click Send.');
@@ -325,4 +336,173 @@ test('floating controls fit within a narrow viewport and still operate', async t
   assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 844);
   await quoteButton(page).click();
   assert.match(await settledText(page), /> Una respuesta concreta/);
+});
+
+// The following synthetic layouts describe isolation contracts, not ChatGPT's
+// actual DOM. Keep these prepared tests unexecuted in an environment where
+// browser startup or host access has been denied.
+test('aside reply with a Reply textarea receives its quote without changing the primary draft', async t => {
+  const outside = `<aside id="surface">${replyMessage}<form>
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea>
+    <button type="submit" data-fixture-send>Send reply</button></form></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  // Prime the primary editor as the last focused editor; scope must win.
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  const text = await settledText(page, '#secondary-editor', /Fragmento de la respuesta en hilo/);
+  assert.ok(text.startsWith(replyDraft));
+  assert.match(text, /> Fragmento de la respuesta en hilo\./);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('role=dialog reply with a Responder textarea is isolated from the primary composer', async t => {
+  const outside = `<div id="surface" role="dialog" aria-label="Hilo">${replyMessage}<form>
+    <textarea id="secondary-editor" aria-label="Responder">${replyDraft}</textarea>
+    <button type="submit" data-fixture-send>Responder</button></form></div>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  assert.match(await settledText(page, '#secondary-editor', /Fragmento de la respuesta en hilo/),
+    /> Fragmento de la respuesta en hilo\./);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('reply without a composer offers manual copying and never falls back to the primary editor', async t => {
+  const page = await fixture(t, primaryForm, '', undefined,
+    `<aside id="surface">${replyMessage}</aside>`);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  const copy = page.getByRole('textbox', { name: 'Cita para copiar', exact: true });
+  await copy.waitFor({ state: 'visible', timeout: 2500 });
+  assert.match(await copy.inputValue(), /> Fragmento de la respuesta en hilo\./);
+  assert.equal(await copy.getAttribute('readonly'), '');
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('reply with a disabled composer does not escape into an enabled primary editor', async t => {
+  const outside = `<aside id="surface">${replyMessage}
+    <textarea id="secondary-editor" aria-label="Reply" disabled>${replyDraft}</textarea></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  await page.getByRole('textbox', { name: 'Cita para copiar', exact: true })
+    .waitFor({ state: 'visible', timeout: 2500 });
+  assert.equal(await page.locator('#secondary-editor').inputValue(), replyDraft);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('a primary-message selection ignores lastEditor from an open reply', async t => {
+  const outside = `<aside id="surface">${replyMessage}<form>
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea>
+    <button type="submit" data-fixture-send>Send reply</button></form></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  const secondaryBefore = await settledText(page, '#secondary-editor', /Fragmento de la respuesta en hilo/);
+  await quote(page, '#passage-one');
+  const primary = await settledText(page);
+  assert.ok(primary.startsWith(primaryDraft));
+  assert.match(primary, /> Una respuesta concreta/);
+  assert.equal(await page.locator('#secondary-editor').inputValue(), secondaryBefore);
+});
+
+test('native showModal dialog contains the quote control in its own top-layer subtree', async t => {
+  const outside = `<dialog id="surface">${replyMessage}<form>
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea>
+    <button type="submit" data-fixture-send>Send reply</button></form></dialog>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await page.locator('#surface').evaluate(dialog => dialog.showModal());
+  await select(page, '#reply-passage');
+  const mountedInsideModal = await quoteButton(page).evaluate(button => {
+    const dialog = document.querySelector('#surface');
+    for (let node = button; node; node = node.parentNode || node.host) {
+      if (node === dialog) return true;
+    }
+    return false;
+  });
+  assert.equal(mountedInsideModal, true, 'The control must be inside the modal, not merely visible behind its top layer.');
+  await quoteButton(page).click();
+  assert.match(await settledText(page, '#secondary-editor', /Fragmento de la respuesta en hilo/),
+    /> Fragmento de la respuesta en hilo\./);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('generic inline section scopes a message to its local reply composer without a dialog or aside', async t => {
+  const inline = `<section id="surface">${replyMessage}<form>
+    <div id="secondary-editor" contenteditable="true" role="textbox" aria-label="Reply">${replyDraft}</div>
+    <button type="submit" data-fixture-send>Send reply</button></form></section>`;
+  const page = await fixture(t, primaryForm, inline);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await quote(page, '#reply-passage');
+  const text = await settledText(page, '#secondary-editor', /Fragmento de la respuesta en hilo/);
+  assert.ok(text.startsWith(replyDraft));
+  assert.match(text, /> Fragmento de la respuesta en hilo\./);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+});
+
+test('one selection crossing primary and reply scopes is rejected, including the keyboard shortcut', async t => {
+  const outside = `<aside id="surface">${replyMessage}
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await page.locator('#passage-one').click();
+  await page.evaluate(() => {
+    const start = document.querySelector('#passage-one').firstChild;
+    const end = document.querySelector('#reply-passage').firstChild;
+    const range = document.createRange();
+    range.setStart(start, 0);
+    range.setEnd(end, end.textContent.length);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.querySelector('#reply-passage').dispatchEvent(new PointerEvent('pointerup', {
+      bubbles: true, pointerType: 'mouse',
+    }));
+    document.dispatchEvent(new Event('selectionchange'));
+  });
+  await page.waitForTimeout(250);
+  assert.equal(await quoteButton(page).isVisible(), false);
+  await page.keyboard.press('Alt+Shift+Q');
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+  assert.equal(await page.locator('#secondary-editor').inputValue(), replyDraft);
+});
+
+test('hiding a reply invalidates its pending quote immediately without a URL change', async t => {
+  const outside = `<aside id="surface">${replyMessage}
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await select(page, '#reply-passage');
+  await quoteButton(page).evaluate(button => {
+    // Click synchronously before MutationObserver can hide a stale control.
+    // Handler-side scope validation, not a timer, must protect the draft.
+    document.querySelector('#surface').hidden = true;
+    button.click();
+  });
+  await page.waitForTimeout(200);
+  assert.equal(page.url(), fixtureURL);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+  assert.equal(await page.locator('#secondary-editor').inputValue(), replyDraft);
+});
+
+test('replacing a reply at the same URL cannot insert a stale selection into the replacement', async t => {
+  const outside = `<aside id="surface">${replyMessage}
+    <textarea id="secondary-editor" aria-label="Reply">${replyDraft}</textarea></aside>`;
+  const page = await fixture(t, primaryForm, '', undefined, outside);
+  await page.locator('#prompt-textarea').fill(primaryDraft);
+  await select(page, '#reply-passage');
+  await quoteButton(page).evaluate(button => {
+    const previous = document.querySelector('#surface');
+    const replacement = previous.cloneNode(true);
+    replacement.querySelector('#secondary-editor').value = 'Borrador de otro hilo.';
+    replacement.querySelector('#reply-passage').textContent = 'Mensaje de otro hilo.';
+    previous.replaceWith(replacement);
+    button.click();
+  });
+  await page.waitForTimeout(200);
+  assert.equal(page.url(), fixtureURL);
+  assert.equal(await page.locator('#prompt-textarea').inputValue(), primaryDraft);
+  assert.equal(await page.locator('#secondary-editor').inputValue(), 'Borrador de otro hilo.');
 });

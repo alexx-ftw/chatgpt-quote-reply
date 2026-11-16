@@ -161,7 +161,7 @@ test('SPA route sync: hides and clears stale UI when leaving Dots, then safely e
 test('snapshot: rejects changed route, changed selected text, and detached source nodes', () => {
   const location = { href: 'http://127.0.0.1/dots/a', pathname: '/dots/a' };
   const isChatRoute = loadHelper('isChatRoute', { location });
-  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute });
+  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute, snapshotContextValid: () => true });
   const startContainer = { isConnected: true };
   const endContainer = { isConnected: true };
   let rangeValue = 'texto';
@@ -184,10 +184,26 @@ test('snapshot: rejects changed route, changed selected text, and detached sourc
   assert.equal(Boolean(snapshotStillValid(null)), false);
 });
 
+test('SPA route sync: does not repeat hidden writes that would retrigger the attribute observer', () => {
+  const location = { href: 'http://127.0.0.1/c/ordinary', pathname: '/c/ordinary' };
+  let writes = 0;
+  let hidden = false;
+  const host = {
+    get hidden() { return hidden; },
+    set hidden(value) { writes++; hidden = value; },
+  };
+  const syncRoute = loadHelper('syncRoute', {
+    location, knownUrl: location.href, host,
+    isChatRoute: loadHelper('isChatRoute', { location }),
+  });
+  for (let i = 0; i < 5; i++) assert.equal(syncRoute(), false);
+  assert.equal(writes, 1, 'Repeated mutation callbacks must not cause an attribute feedback loop.');
+});
+
 test('snapshot: a matching URL and intact selection are insufficient outside Dots', () => {
   const location = { href: '', pathname: '' };
   const isChatRoute = loadHelper('isChatRoute', { location });
-  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute });
+  const snapshotStillValid = loadHelper('snapshotStillValid', { location, isChatRoute, snapshotContextValid: () => true });
   for (const pathname of ['/', '/c/example', '/g/project/c/example', '/dots-other']) {
     location.pathname = pathname;
     location.href = `http://127.0.0.1${pathname}`;
@@ -203,14 +219,19 @@ test('snapshot: a matching URL and intact selection are insufficient outside Dot
 });
 
 function findWith(candidates, lastEditor = null) {
+  // Ranking-only fixture: all candidates are in the same conversation scope.
+  // Actual ancestor/boundary isolation is covered in reply-context.unit.cjs.
+  const scope = {}, boundary = {};
   return loadHelper('findEditor', {
     candidateEditors: () => candidates,
     editorScore: editor => editor.score,
+    editorScope: () => scope,
+    conversationBoundary: () => boundary,
     lastEditor,
-  })();
+  })({ scope, boundary });
 }
 
-test('editor choice: a unique strong candidate beats generic candidates', () => {
+test('editor choice: within the same scope, a unique strong candidate beats generic candidates', () => {
   const strong = { score: 100 }, generic = { score: 50 };
   assert.equal(findWith([generic, strong]), strong);
 });
@@ -444,6 +465,38 @@ test('insertion logic: redirected focus aborts rather than typing into an unrela
   assert.equal(calls.length, 0);
 });
 
+test('insertion logic: stale reply context aborts before focusing or modifying the draft', async () => {
+  const editor = new FakeTextarea('reply draft');
+  const { appendQuote, calls } = insertionHarness(editor);
+  const result = await appendQuote(editor, '> cita', () => false);
+  assert.equal(result.ok, false);
+  assert.equal(editor.value, 'reply draft');
+  assert.equal(editor.focused, false);
+  assert.equal(calls.length, 0);
+});
+
+test('insertion logic: reply replacement on focus aborts even when URL and editor stay the same', async () => {
+  const editor = new FakeTextarea('reply draft');
+  let validContext = true;
+  const { appendQuote, calls } = insertionHarness(editor);
+  editor.onFocus = () => { validContext = false; };
+  const result = await appendQuote(editor, '> cita', () => validContext);
+  assert.equal(result.ok, false);
+  assert.equal(editor.value, 'reply draft');
+  assert.equal(calls.length, 0);
+});
+
+test('insertion logic: changing reply context during beforeinput prevents the fallback setter', async () => {
+  const editor = new FakeTextarea('reply draft');
+  let validContext = true;
+  editor.addEventListener('beforeinput', () => { validContext = false; });
+  const { appendQuote } = insertionHarness(editor, 'unsupported');
+  const result = await appendQuote(editor, '> cita', () => validContext);
+  assert.equal(result.ok, false);
+  assert.equal(editor.value, 'reply draft');
+  assert.equal(editor.events.filter(event => event.type === 'input').length, 0);
+});
+
 test('insertion logic: a beforeinput handler modifying the draft is never overwritten by fallback', async () => {
   const editor = new FakeTextarea('previo');
   editor.addEventListener('beforeinput', () => { editor.value = 'modificado por editor'; });
@@ -535,9 +588,10 @@ function quoteActionHarness(options = {}) {
     href: `http://127.0.0.1${options.pathname ?? '/dots/fixture'}`,
   };
   const isChatRoute = loadHelper('isChatRoute', { location });
-  const validateSnapshot = loadHelper('snapshotStillValid', { location, isChatRoute });
+  const validateSnapshot = loadHelper('snapshotStillValid', { location, isChatRoute, snapshotContextValid: () => true });
   const snapshot = {
     text: 'Fragmento seleccionado', rangeText: 'Fragmento seleccionado', url: location.href,
+    editor: options.missingEditor ? null : editor,
     range: {
       startContainer: { isConnected: true }, endContainer: { isConnected: true },
       toString: () => 'Fragmento seleccionado',
@@ -553,7 +607,7 @@ function quoteActionHarness(options = {}) {
     isChatRoute,
     snapshotStillValid: current => options.valid !== false && validateSnapshot(current),
     blockquote: loadHelper('blockquote'),
-    findEditor: () => options.missingEditor ? null : editor,
+    mountOverlay: () => {},
     hideBar: () => { calls.hidden++; },
     notify: message => calls.notifications.push(message),
     showCopyPanel: (quote, reason) => calls.copyPanels.push({ quote, reason }),
